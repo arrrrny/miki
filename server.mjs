@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
+import { attachMcp } from './mcp.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MIKI_PORT || 7654);
@@ -29,6 +30,7 @@ const ROOT = path.resolve(process.env.MIKI_ROOT || __dirname);
 // concurrent cloud agents never collide. AUTH_SECRET gates token issuance.
 export const AUTH_SECRET = process.env.MIKI_AUTH_SECRET || 'dev-secret-change-me';
 const sessions = new Map(); // token -> { id, workspace }
+let mcpHandler = null; // assigned by attachMcp when the MCP surface is mounted
 
 export async function issueToken() {
   const id = crypto.randomUUID();
@@ -184,6 +186,48 @@ export const tools = {
       return `multiedit ${rel}: ${done} edits applied`;
     },
   },
+  skills: {
+    kimi: 'Skill',
+    transport: 'rest',
+    description: "List or load a skill — a playbook of instructions the surgeon follows inside the box. Maps to kimi's Skill tool, but inverse: the cloud agent loads the skill into itself, then drives the arms. action='list' -> names + descriptions; action='get',skill=NAME -> the SKILL.md body.",
+    input: { action: '"list" | "get"', skill: 'string? (name, required when action="get")' },
+    run: async ({ action, skill }) => {
+      const skillsDir = process.env.MIKI_SKILLS_DIR || path.join(__dirname, 'skills');
+      if (action === 'list') {
+        const items = [];
+        let entries;
+        try {
+          entries = await fs.readdir(skillsDir, { withFileTypes: true });
+        } catch {
+          return 'no skills installed';
+        }
+        for (const e of entries) {
+          if (!e.isDirectory()) continue;
+          let desc = '';
+          try {
+            const txt = await fs.readFile(path.join(skillsDir, e.name, 'SKILL.md'), 'utf8');
+            const fm = /---\n([\s\S]*?)\n---/.exec(txt);
+            if (fm) {
+              for (const line of fm[1].split('\n')) {
+                const m = /^description:\s*(.*)/.exec(line);
+                if (m) desc = m[1].trim();
+              }
+            }
+          } catch {
+            // no SKILL.md -> still list the name, no description
+          }
+          items.push({ name: e.name, description: desc });
+        }
+        if (!items.length) return 'no skills installed';
+        return items.map((x) => `${x.name} — ${x.description}`).join('\n');
+      }
+      if (action === 'get') {
+        if (typeof skill !== 'string' || !skill) throw new Error('skill name required when action="get"');
+        return await fs.readFile(path.join(skillsDir, skill, 'SKILL.md'), 'utf8');
+      }
+      throw new Error('action must be "list" or "get"');
+    },
+  },
   exec: {
     kimi: 'Bash',
     transport: 'wss',
@@ -276,32 +320,90 @@ export async function restHandler(req, res) {
     return json(res, 200, { ok: true, cleared: session.cleared, sessionId: session.id });
   }
 
+  // MCP-over-SSE (Milestone 10). The SSE stream is the server->client channel;
+  // JSON-RPC requests arrive as POST /mcp (see mcp.mjs). Only reached when the
+  // MCP layer is attached (it patches restHandler).
+  if (url.pathname === '/mcp') {
+    if (typeof mcpHandler === 'function') return mcpHandler(req, res);
+    return json(res, 501, { ok: false, error: 'mcp not attached' });
+  }
+
   return json(res, 404, { ok: false, error: 'not found' });
 }
 
-// Shared tool invocation — used by REST handler and by the test suite.
-export async function invokeTool(name, args = {}, root = ROOT, sessionId = null) {
+// Shared tool invocation — used by REST, WSS, and MCP. `transport` is the real
+// wire that carried the call, so the kimi transcript audit is honest.
+export async function invokeTool(name, args = {}, root = ROOT, sessionId = null, transport = 'rest') {
   const tool = tools[name];
   if (!tool) {
     const out = { ok: false, error: `unknown tool: ${name}` };
-    recordEntry({ sessionId, kimi: '?', tool: name, args, transport: 'rest', ...out });
+    recordEntry({ sessionId, kimi: '?', tool: name, args, transport, ...out });
     return out;
   }
   if (tool.transport === 'wss') {
-    const out = { ok: false, error: `${name} is a streaming tool — connect over WSS at /ws, not REST` };
-    recordEntry({ sessionId, kimi: tool.kimi, tool: name, args, transport: 'rest', ...out });
+    const out = { ok: false, error: `${name} is a streaming tool — connect over WSS at /ws or MCP, not REST` };
+    recordEntry({ sessionId, kimi: tool.kimi, tool: name, args, transport, ...out });
     return out;
   }
   try {
     const result = await tool.run(args || {}, { root });
     const out = { ok: true, tool: name, result };
-    recordEntry({ sessionId, kimi: tool.kimi, tool: name, args, transport: 'wss', ...out });
+    recordEntry({ sessionId, kimi: tool.kimi, tool: name, args, transport, ...out });
     return out;
   } catch (e) {
     const out = { ok: false, error: String(e && e.message ? e.message : e) };
-    recordEntry({ sessionId, kimi: tool.kimi, tool: name, args, transport: 'wss', ...out });
+    recordEntry({ sessionId, kimi: tool.kimi, tool: name, args, transport, ...out });
     return out;
   }
+}
+
+// Streaming exec, shared by WSS and MCP. `onProgress` is called with each
+// chunk as it arrives; the returned promise resolves with the full output +
+// exit code when the child closes. This is the single source of truth for the
+// Bash-mirroring arms — both transports spool the same frames.
+export function runExec({ command, root, cwd, timeout, sessionId, onProgress }) {
+  const base = root || ROOT;
+  const realCwd = cwd ? path.resolve(base, cwd) : base;
+  if (realCwd !== base && !realCwd.startsWith(base + path.sep)) {
+    const err = 'cwd escapes sandbox root';
+    onProgress?.({ type: 'error', message: err });
+    return { promise: Promise.resolve({ ok: false, error: err, exitCode: null }), child: null };
+  }
+  const entry = recordEntry({
+    sessionId: sessionId ?? null,
+    kimi: 'Bash',
+    tool: 'exec',
+    args: { command, cwd: cwd || '' },
+    transport: 'mcp',
+    ok: true,
+  });
+  const child = spawn(command, { shell: true, cwd: realCwd, env: { ...process.env, MIKI_ROOT: realCwd } });
+  const promise = new Promise((resolve) => {
+    let out = '';
+    const timer = timeout
+      ? setTimeout(() => {
+          child.kill('SIGKILL');
+          onProgress?.({ type: 'error', message: `timeout ${timeout}s` });
+        }, timeout * 1000)
+      : null;
+    child.stdout.on('data', (d) => {
+      const s = d.toString('utf8');
+      out += s;
+      onProgress?.({ type: 'stdout', data: s });
+    });
+    child.stderr.on('data', (d) => {
+      const s = d.toString('utf8');
+      out += s;
+      onProgress?.({ type: 'stderr', data: s });
+    });
+    child.on('error', (e) => onProgress?.({ type: 'error', message: String(e.message || e) }));
+    child.on('close', (code) => {
+      if (timer) clearTimeout(timer);
+      entry.exitCode = code ?? 0;
+      resolve({ ok: true, result: out, exitCode: code ?? 0 });
+    });
+  });
+  return { promise, child };
 }
 
 async function handleCall(req, res, url) {
@@ -332,40 +434,21 @@ async function handleCall(req, res, url) {
 // inside the box, driven by the surgeon (agent) over a single connection.
 function startExec(ws, msg) {
   const base = ws._session ? ws._session.workspace : ROOT;
-  const cwd = msg.cwd ? path.resolve(base, msg.cwd) : base;
-  if (cwd !== base && !cwd.startsWith(base + path.sep)) {
-    return ws.send(JSON.stringify({ type: 'error', message: 'cwd escapes sandbox root' }));
-  }
-  const entry = recordEntry({
+  const { promise, child } = runExec({
+    command: msg.command,
+    root: base,
+    cwd: msg.cwd,
+    timeout: msg.timeout,
     sessionId: ws._session ? ws._session.id : null,
-    kimi: 'Bash',
-    tool: 'exec',
-    args: { command: msg.command, cwd: msg.cwd || '' },
-    transport: 'wss',
-    control: ws._session ? ws._session.cleared : false,
-    ok: true,
+    onProgress: (f) => {
+      if (f.type === 'error') ws.send(JSON.stringify({ type: 'error', message: f.message }));
+      else if (f.type === 'stdout' || f.type === 'stderr') ws.send(JSON.stringify(f));
+      else if (f.type === 'exit') ws.send(JSON.stringify(f));
+    },
   });
-  const child = spawn(msg.command, { shell: true, cwd, env: { ...process.env, MIKI_ROOT: base } });
   ws._mikiChild = child;
-  const timer = msg.timeout
-    ? setTimeout(() => {
-        child.kill('SIGKILL');
-        ws.send(JSON.stringify({ type: 'error', message: `timeout ${msg.timeout}s` }));
-      }, msg.timeout * 1000)
-    : null;
-  child.stdout.on('data', (d) =>
-    ws.send(JSON.stringify({ type: 'stdout', data: d.toString('utf8') })),
-  );
-  child.stderr.on('data', (d) =>
-    ws.send(JSON.stringify({ type: 'stderr', data: d.toString('utf8') })),
-  );
-  child.on('error', (e) =>
-    ws.send(JSON.stringify({ type: 'error', message: String(e.message || e) })),
-  );
-  child.on('close', (code) => {
-    if (timer) clearTimeout(timer);
-    entry.exitCode = code ?? 0;
-    ws.send(JSON.stringify({ type: 'exit', exitCode: code ?? 0 }));
+  promise.then((r) => {
+    if (r.ok) ws.send(JSON.stringify({ type: 'exit', exitCode: r.exitCode }));
   });
 }
 
@@ -408,7 +491,7 @@ function attachWss(server) {
             JSON.stringify({ type: 'error', message: 'expected {type:"call",tool:"..."}' }),
           );
         }
-        return invokeTool(msg.tool, msg.args || {}, ws._session.workspace, ws._session.id).then(
+        return invokeTool(msg.tool, msg.args || {}, ws._session.workspace, ws._session.id, 'wss').then(
           (out) => ws.send(JSON.stringify({ type: 'result', id: msg.id, ...out })),
         );
       }
@@ -422,8 +505,8 @@ function attachWss(server) {
   return wss;
 }
 
-// Build the secure server (REST + WSS on one base). Used by the run-directly
-// block and by the test suite (which listens on an ephemeral port).
+// Build the secure server (REST + WSS + MCP on one base). Used by the
+// run-directly block and by the test suite (which listens on an ephemeral port).
 export function createServer() {
   const tls = {
     key: fssync.readFileSync(path.join(__dirname, 'certs', 'key.pem')),
@@ -431,7 +514,9 @@ export function createServer() {
   };
   const server = https.createServer(tls, restHandler);
   const wss = attachWss(server);
-  return { server, wss };
+  const mcp = attachMcp(server, { tools, invokeTool, runExec, sessionForToken });
+  mcpHandler = mcp.handler;
+  return { server, wss, mcp };
 }
 
 // Run directly -> start the secure server (REST + WSS on one base, like r2.sh).

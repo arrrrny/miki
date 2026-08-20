@@ -61,6 +61,7 @@ just the arms that make the surgeon's moves land correctly in the box.
 | `grep`        | `Grep`       | REST      | done   |
 | `list_files`  | `Glob`       | REST      | done   |
 | `exec`        | `Bash`       | WSS (stream) | done |
+| `skills`      | `Skill`      | REST      | done |
 | *(unified WSS session)* | all of the above over one socket | WSS | done |
 | *(agent sessions + auth)* | isolated workspace + token per agent | REST+WSS | done |
 | *(kimi transcript)* | auditable session log (each call as a kimi command) | — | done |
@@ -83,6 +84,12 @@ REST (HTTPS)
   POST /session     -> Authorization: Bearer <MIKI_AUTH_SECRET>
                      -> { "ok":true, "token":"<hex>", "sessionId":"<uuid>",
                           "workspace":"<MIKI_ROOT>/.sessions/<uuid>" }
+  POST /tools/call  -> { "tool":"skills", "args":{ "action":"list" } }
+                     -> { "ok":true, "result":"read-and-patch — ...\nsubmit-exercise — ..." }
+                  OR -> { "tool":"skills", "args":{ "action":"get", "skill":"read-and-patch" } }
+                     -> { "ok":true, "result":"---\nname: read-and-patch\n..." }  (the SKILL.md body)
+                     the inverse of kimi's Skill tool: the surgeon loads a playbook
+                     into ITSELF, then drives the arms — skills live in skills/
   GET  /transcript  -> Authorization: Bearer <MIKI_AUTH_SECRET>
                        ?session=<uuid>  (omit to get the whole log)
                      -> { "ok":true, "count":N, "entries":[ { ts, sessionId,
@@ -96,6 +103,20 @@ REST (HTTPS)
                      arms. Only after GATE OPEN does the gym call this.
   GET  /status      -> ?token=<token>
                      -> { "ok":true, "cleared":true|false, "sessionId":"<uuid>" }
+
+MCP (SSE, HTTPS)  /mcp   miki AS an MCP server — the surgeon's client plugs in
+                         over the protocol it already speaks; every miki tool is
+                         exposed as an MCP tool, performed inside the box as the
+                         mapped kimi command. See `mcp.mjs`.
+  GET  /mcp?token=<token>   SSE: server->client stream + an `endpoint` event
+                            telling the client where to POST JSON-RPC
+  POST /mcp?sessionId=<id>  JSON-RPC 2.0: initialize / tools/list / tools/call
+                            responses stream back over the SSE channel; exec
+                            streams as `notification/progress` frames
+  methods: initialize -> { protocolVersion, capabilities, serverInfo }
+           tools/list -> { tools:[ { name, description, inputSchema, annotations } ] }
+           tools/call -> { content:[{type:"text",text:"..."}], isError:bool }
+           (exec streams stdout/stderr live, then resolves with the capture)
 
 WSS (WSS)  /ws?token=<token>   streaming exec — like kimi's Bash, frames arrive over time
   client -> { "type":"start", "command":"dart test", "cwd"?:"", "timeout"?":N }
@@ -259,10 +280,13 @@ MIKI_DROP_CARD=1 node gym.mjs     # every mis-fire auto-fires a DROP CARD
 - `bootstrap.mjs` — launch miki in a sandbox and print the agent connect URL.
 - `agent.mjs`     — minimal cloud-agent demo over REST (lists tools, reads a file).
 - `agent-ws.mjs`  — cloud-agent demo over WSS (auth + streams exec output live).
+- `mcp.mjs`       — miki AS an MCP server (MCP-over-SSE): exposes every arm as an MCP tool.
+- `mcp-client.mjs`— minimal MCP-over-SSE client (the surgeon's plug-in; `npm run demo:mcp`).
 - `demo.mjs`      — spawns the server, runs the REST agent, exits.
 - `gym.mjs`       — the two-phase GYM runner (warmup reps + graded exercises + gate).
 - `gym/`          — warmup reps (`<id>-<name>.mjs`) and graded exercises (`exercise-*.mjs`).
 - `drop.mjs`      — DROP CARD helper: capture a mis-fire as a card (local drop + GitHub issue).
+- `skills/`       — skill playbooks (`<name>/SKILL.md`); the `skills` arm lists and loads them.
 - `dart_demo/stream.dart` — a `dart test`-style streaming script (no pub get).
 - `sample.txt`    — a file for the demo to read.
 - `certs/`        — local self-signed TLS cert (gitignored; `npm run certs`).
@@ -289,3 +313,11 @@ MIKI_DROP_CARD=1 node gym.mjs     # every mis-fire auto-fires a DROP CARD
 - [x] **M9 DROP CARD auto-fire** — with `MIKI_DROP_CARD=1`, the gym spawns
       `drop.mjs` on every mis-fire (local card + GitHub issue), capturing the
       discovery instead of burying it.
+- [x] **M10 MCP server** — miki exposes its arms as an MCP server over SSE
+      (HTTPS). A cloud agent plugs in over the protocol it already speaks; every
+      tool is an MCP tool with its `kimi:` mapping, `exec` streams live as
+      `notification/progress`. Same isolation, same transcript audit as WSS.
+- [x] **M11 Skills** — the inverse of kimi's `Skill` tool. The `skills` arm
+      (`action:"list"` | `"get"`) lets the surgeon enumerate and load playbooks
+      from `skills/` into itself, then drive the arms. One tool, all transports
+      (REST / WSS / MCP); `readOnlyHint` true because it only reads SKILL.md bodies.

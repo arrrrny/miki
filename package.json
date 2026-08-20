@@ -12,7 +12,9 @@
     "bootstrap": "node bootstrap.mjs",
     "certs": "mkdir -p certs && openssl req -x509 -newkey rsa:2048 -nodes -keyout certs/key.pem -out certs/cert.pem -days 365 -subj \"/CN=localhost\" -addext \"subjectAltName=DNS:localhost,IP:127.0.0.1\"",
     "demo": "node demo.mjs",
-    "demo:ws": "node agent-ws.mjs"
+    "demo:ws": "node agent-ws.mjs",
+    "demo:mcp": "node mcp-client.mjs",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "ws": "^8.21.3"

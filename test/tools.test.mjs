@@ -59,3 +59,28 @@ test('unknown tool errors', async () => {
   assert.equal(out.ok, false);
   assert.match(out.error, /unknown tool/);
 });
+
+test('skills arm maps to kimi Skill and is read-only', async () => {
+  assert.equal(tools.skills.kimi, 'Skill');
+  assert.equal(tools.skills.transport, 'rest');
+});
+
+test('skills action=list enumerates installed skills', async () => {
+  const out = await invokeTool('skills', { action: 'list' });
+  assert.equal(out.ok, true);
+  assert.match(out.result, /read-and-patch/);
+  assert.match(out.result, /submit-exercise/);
+});
+
+test('skills action=get returns a skill playbook body', async () => {
+  const out = await invokeTool('skills', { action: 'get', skill: 'read-and-patch' });
+  assert.equal(out.ok, true);
+  assert.match(out.result, /# read-and-patch/);
+  assert.match(out.result, /read_file/);
+});
+
+test('skills action=get requires a skill name', async () => {
+  const out = await invokeTool('skills', { action: 'get' });
+  assert.equal(out.ok, false);
+  assert.match(out.error, /skill name required/);
+});
