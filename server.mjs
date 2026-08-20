@@ -35,7 +35,7 @@ export async function issueToken() {
   const token = crypto.randomBytes(24).toString('hex');
   const workspace = path.join(ROOT, '.sessions', id);
   await fs.mkdir(workspace, { recursive: true });
-  sessions.set(token, { id, workspace });
+  sessions.set(token, { id, workspace, cleared: false });
   return { token, id, workspace };
 }
 
@@ -248,6 +248,34 @@ export async function restHandler(req, res) {
     return json(res, 200, { ok: true, count: entries.length, entries });
   }
 
+  if (req.method === 'POST' && url.pathname === '/promote') {
+    const auth = req.headers['authorization'] || '';
+    const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    const token = bearer || url.searchParams.get('token') || '';
+    const session = sessionForToken(token);
+    if (!session) return json(res, 401, { ok: false, error: 'unknown or missing token' });
+    // GATE OPEN -> the surgeon is cleared to operate. The arms are handed over.
+    session.cleared = true;
+    recordEntry({ sessionId: session.id, kimi: 'Promote', tool: 'promote', args: { token: token.slice(0, 8) + '...' }, transport: 'rest', ok: true });
+    return json(res, 200, {
+      ok: true,
+      cleared: true,
+      controlToken: token,
+      sessionId: session.id,
+      workspace: session.workspace,
+      tools: Object.keys(tools),
+    });
+  }
+
+  if (req.method === 'GET' && url.pathname === '/status') {
+    const auth = req.headers['authorization'] || '';
+    const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+    const token = bearer || url.searchParams.get('token') || '';
+    const session = sessionForToken(token);
+    if (!session) return json(res, 401, { ok: false, error: 'unknown or missing token' });
+    return json(res, 200, { ok: true, cleared: session.cleared, sessionId: session.id });
+  }
+
   return json(res, 404, { ok: false, error: 'not found' });
 }
 
@@ -314,6 +342,7 @@ function startExec(ws, msg) {
     tool: 'exec',
     args: { command: msg.command, cwd: msg.cwd || '' },
     transport: 'wss',
+    control: ws._session ? ws._session.cleared : false,
     ok: true,
   });
   const child = spawn(msg.command, { shell: true, cwd, env: { ...process.env, MIKI_ROOT: base } });

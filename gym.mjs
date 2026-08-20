@@ -13,6 +13,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { globSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.MIKI_PORT || 7654);
@@ -109,6 +110,46 @@ async function waitForSubmit(workspace, timeoutSec) {
   });
 }
 
+// DROP CARD — at a mis-fire, capture the discovery. Auto-fires when
+// MIKI_DROP_CARD=1 (spawns drop.mjs -> local card + GitHub issue). Otherwise it
+// prints the manual command. A mis-fire is not a mistake; it is a signal.
+function dropCard({ agent, where, did, expected, happened }) {
+  if (!process.env.MIKI_DROP_CARD) {
+    console.log(
+      `    MIS-FIRE. Not a mistake — a signal. Drop a card:\n` +
+        `    node drop.mjs --agent ${agent} --where "${where}" --did "${did}" ` +
+        `--expected "${expected}" --happened "${happened}"\n`,
+    );
+    return;
+  }
+  const r = spawnSync(
+    'node',
+    ['drop.mjs', '--agent', agent, '--where', where, '--did', did, '--expected', expected, '--happened', happened, '--discovery'],
+    { cwd: __dirname, encoding: 'utf8' },
+  );
+  const out = (r.stdout || r.stderr || '').trim().split('\n').map((l) => '\n      ' + l).join('');
+  console.log(`    DROP CARD auto-fired:${out}\n`);
+}
+
+// Promote a cleared session — the gym hands the surgeon the arms.
+function promote(token) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      { hostname: 'localhost', port: PORT, path: '/promote', method: 'POST', rejectUnauthorized: false, headers: { authorization: 'Bearer ' + token } },
+      (res) => {
+        let d = '';
+        res.on('data', (c) => (d += c));
+        res.on('end', () => {
+          const b = JSON.parse(d);
+          b.ok ? resolve(b) : reject(new Error(b.error || 'promote failed'));
+        });
+      },
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
 // Load every rep/exercise from gym/. A WARMUP rep exposes verify(ctx). A graded
 // EXERCISE exposes evaluate(workspace). The runner splits by which is present.
 const files = globSync('gym/*.mjs', { cwd: __dirname }).sort();
@@ -147,7 +188,7 @@ for (const ex of warmups) {
       grown++;
     } else {
       console.log(`    WEAK — ${r?.note || 'false'}\n`);
-      console.log(`    MIS-FIRE. Not a mistake — a signal. Drop a card:\n    node drop.mjs --agent <you> --where "miki GYM ${ex.id} ${ex.name}" --did "..." --expected "..." --happened "${r?.note || ''}"\n`);
+      dropCard({ agent: 'warmup', where: `miki GYM ${ex.id} ${ex.name}`, did: `warmup rep ${ex.id} ${ex.name}`, expected: 'verify() returns ok', happened: r?.note || 'false' });
     }
   } catch (e) {
     console.log(`    WEAK — ${e.message}\n`);
@@ -190,7 +231,7 @@ for (const ex of exercises) {
       passed++;
     } else {
       console.log(`    FAILED — ${r?.notes || 'evaluate returned false'}\n`);
-      console.log(`    MIS-FIRE. Not a mistake — a signal. Drop a card:\n    node drop.mjs --agent <you> --where "miki GYM ${ex.id} ${ex.name}" --did "..." --expected "..." --happened "${r?.notes || ''}"\n`);
+      dropCard({ agent: 'exercise', where: `miki GYM ${ex.id} ${ex.name}`, did: `exercise ${ex.id} ${ex.name}`, expected: 'evaluate() returns pass', happened: r?.notes || 'evaluate returned false' });
     }
   } catch (e) {
     console.log(`    FAILED — ${e.message}\n`);
@@ -207,4 +248,10 @@ if (passed < exercises.length) {
   console.log('GATE CLOSED. You did not clear the exercises. No kimi for you.');
   process.exit(1);
 }
-console.log('GATE OPEN. You wield miki. Control kimi.');
+console.log('GATE OPEN. You wield miki.');
+const grant = await promote(s.token);
+console.log(`CONTROL GRANTED — cleared session ${grant.sessionId}`);
+console.log(`  controlToken: ${grant.controlToken.slice(0, 12)}...`);
+console.log(`  workspace:    ${grant.workspace}`);
+console.log(`  tools:        ${grant.tools.join(', ')}`);
+console.log('The surgeon is cleared to operate. Control kimi.');

@@ -87,7 +87,15 @@ REST (HTTPS)
                        ?session=<uuid>  (omit to get the whole log)
                      -> { "ok":true, "count":N, "entries":[ { ts, sessionId,
                           kimi:"Read"|"Write"|"Glob"|"Bash", tool, args,
-                          transport, ok, result?|error?, exitCode? } ] }
+                          transport, ok, result?|error?, exitCode?, control? } ] }
+  POST /promote     -> Authorization: Bearer <session token> (or ?token=<token>)
+                     -> { "ok":true, "cleared":true, "controlToken":"<hex>",
+                          "sessionId":"<uuid>", "workspace":"<path>",
+                          "tools":["read_file",...] }
+                     marks the agent's session cleared: the surgeon is handed the
+                     arms. Only after GATE OPEN does the gym call this.
+  GET  /status      -> ?token=<token>
+                     -> { "ok":true, "cleared":true|false, "sessionId":"<uuid>" }
 
 WSS (WSS)  /ws?token=<token>   streaming exec — like kimi's Bash, frames arrive over time
   client -> { "type":"start", "command":"dart test", "cwd"?:"", "timeout"?":N }
@@ -210,6 +218,12 @@ then grades the submission with `evaluate(workspace)` — automated tests agains
 the agent's work, not miki's code. Fail and the gate stays shut; only passing
 agents are cleared to control kimi.
 
+On **GATE OPEN**, the runner closes the loop: it calls `POST /promote` with the
+agent's session token, which clears the session and hands back a `controlToken`
+plus the workspace path and the tool surface. That is the moment the surgeon is
+given the arms — the agent can now drive kimi inside the box as if it were kimi
+itself. `GET /status` reports whether a session has been cleared.
+
 The GYM paradigm itself — the inverse of a test suite, built to grow the
 operator — is documented at
 [github.com/arrrrny/gym](https://github.com/arrrrny/gym).
@@ -227,6 +241,17 @@ and a GitHub issue. That unexpected outcome can be a bug, or it can be a
 discovery nobody saw coming — and it deserves the extra attention either way.
 The `drop.mjs` helper ships in this repo and the concept lives at
 [github.com/arrrrny/drop-card](https://github.com/arrrrny/drop-card).
+
+**Auto-fire.** Set `MIKI_DROP_CARD=1` and the gym runner spawns `drop.mjs` on
+*every* mis-fire — a failed warmup rep or a failed exercise — without you
+thinking about it. The card captures `Did / Expected / Happened / Where` and
+flags `Discovery: YES`, then drops both the local file and the issue. Leave it
+unset and the runner just prints the manual command instead, so self-drive
+verification never spams GitHub.
+
+```bash
+MIKI_DROP_CARD=1 node gym.mjs     # every mis-fire auto-fires a DROP CARD
+```
 
 ## Files
 
@@ -258,3 +283,9 @@ The `drop.mjs` helper ships in this repo and the concept lives at
 - [x] **M6 Bootstrap** — `bootstrap.mjs` launches miki in a sandbox and exposes
       the connect URL (Daytona `DAYTONA_WORKSPACE_URL` aware).
 - [x] **M7 Docs** — this README.
+- [x] **M8 Promotion loop** — on GATE OPEN the gym calls `POST /promote`, clearing
+      the agent's session and handing back `controlToken` + `workspace` + tool
+      surface; `GET /status` reports clearance. The surgeon is given the arms.
+- [x] **M9 DROP CARD auto-fire** — with `MIKI_DROP_CARD=1`, the gym spawns
+      `drop.mjs` on every mis-fire (local card + GitHub issue), capturing the
+      discovery instead of burying it.
