@@ -1,0 +1,6 @@
+miki is the inverse of kimi.
+
+kimi asks you for a provider so it can think.
+miki asks for nothing — the cloud agent that connects already thinks.
+
+This file exists so the bare-minimal demo has something to read.

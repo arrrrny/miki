@@ -1,0 +1,20 @@
+{
+  "name": "miki",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Inverse Kimi — a provider-free coding tool server for cloud agents.",
+  "bin": {
+    "miki": "./server.mjs"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "bootstrap": "node bootstrap.mjs",
+    "certs": "mkdir -p certs && openssl req -x509 -newkey rsa:2048 -nodes -keyout certs/key.pem -out certs/cert.pem -days 365 -subj \"/CN=localhost\" -addext \"subjectAltName=DNS:localhost,IP:127.0.0.1\"",
+    "demo": "node demo.mjs",
+    "demo:ws": "node agent-ws.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
+  }
+}
