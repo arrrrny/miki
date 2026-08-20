@@ -162,6 +162,12 @@ if (!warmupOk) {
   process.exit(1);
 }
 
+if (process.env.MIKI_SELF_DRIVE) {
+  const { driveGym } = await import('./gym-driver.mjs');
+  console.log('\nSELF-DRIVE — a cloud agent fulfills every exercise via miki tools.\n');
+  await driveGym({ ctx, workspace: s.workspace });
+}
+
 console.log(`PHASE 2 — EXERCISES (${exercises.length}). Build it solo, then submit. The gate grades you.\n`);
 let passed = 0;
 for (const ex of exercises) {

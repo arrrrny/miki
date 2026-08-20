@@ -101,6 +101,89 @@ export const tools = {
       return matches.sort().join('\n');
     },
   },
+  grep: {
+    kimi: 'Grep',
+    transport: 'rest',
+    description: "Search file contents in the sandbox by regex. Maps to kimi's Grep tool.",
+    input: { pattern: 'string (regex)', path: 'string? (file/dir relative to root, default root)', glob: 'string? (file filter, e.g. "*.ts")' },
+    run: async ({ pattern, path: rel, glob }, { root }) => {
+      if (typeof pattern !== 'string' || !pattern) throw new Error('pattern is required');
+      const base = rel ? path.resolve(root, rel) : root;
+      if (base !== root && !base.startsWith(root + path.sep)) throw new Error('path escapes sandbox root');
+      const re = new RegExp(pattern);
+      const skip = new Set(['node_modules', 'certs', '.sessions']);
+      let files = globSync('**/*', { cwd: base, nodir: true }).filter(
+        (p) => !p.split('/').some((seg) => skip.has(seg)),
+      );
+      if (typeof glob === 'string' && glob) {
+        const gf = new RegExp('^' + glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
+        files = files.filter((f) => gf.test(f));
+      }
+      const out = [];
+      for (const f of files) {
+        const full = path.join(base, f);
+        let content;
+        try {
+          content = await fs.readFile(full, 'utf8');
+        } catch {
+          continue;
+        }
+        content.split('\n').forEach((line, i) => {
+          if (re.test(line)) out.push(`${f}:${i + 1}:${line}`);
+        });
+      }
+      return out.length ? out.join('\n') : 'no matches';
+    },
+  },
+  edit: {
+    kimi: 'Edit',
+    transport: 'rest',
+    description: "Replace old_string with new_string in a file. Maps to kimi's Edit tool.",
+    input: { path: 'string', old_string: 'string', new_string: 'string', replace_all: 'boolean?' },
+    run: async ({ path: rel, old_string, new_string, replace_all }, { root }) => {
+      if (typeof rel !== 'string' || !rel) throw new Error('path is required');
+      if (typeof old_string !== 'string' || typeof new_string !== 'string') {
+        throw new Error('old_string and new_string required');
+      }
+      const full = path.resolve(root, rel);
+      if (full !== root && !full.startsWith(root + path.sep)) throw new Error('path escapes sandbox root');
+      const content = await fs.readFile(full, 'utf8');
+      const count = content.split(old_string).length - 1;
+      if (count === 0) throw new Error('old_string not found');
+      if (!replace_all && count > 1) {
+        throw new Error(`old_string not unique (found ${count}) — pass replace_all or widen it`);
+      }
+      const next = replace_all ? content.split(old_string).join(new_string) : content.replace(old_string, new_string);
+      await fs.writeFile(full, next, 'utf8');
+      return `edited ${rel} (${count} occurrence${count === 1 ? '' : 's'})`;
+    },
+  },
+  multiedit: {
+    kimi: 'MultiEdit',
+    transport: 'rest',
+    description: "Apply several edits to one file in order. Maps to kimi's MultiEdit tool.",
+    input: { path: 'string', edits: 'array of {old_string,new_string}' },
+    run: async ({ path: rel, edits }, { root }) => {
+      if (typeof rel !== 'string' || !rel) throw new Error('path is required');
+      if (!Array.isArray(edits) || !edits.length) throw new Error('edits array required');
+      const full = path.resolve(root, rel);
+      if (full !== root && !full.startsWith(root + path.sep)) throw new Error('path escapes sandbox root');
+      let content = await fs.readFile(full, 'utf8');
+      let done = 0;
+      for (const e of edits) {
+        if (typeof e.old_string !== 'string' || typeof e.new_string !== 'string') {
+          throw new Error('each edit needs old_string + new_string');
+        }
+        const count = content.split(e.old_string).length - 1;
+        if (count === 0) throw new Error('old_string not found: ' + JSON.stringify(e.old_string));
+        if (count > 1) throw new Error('old_string not unique: ' + JSON.stringify(e.old_string));
+        content = content.replace(e.old_string, e.new_string);
+        done++;
+      }
+      await fs.writeFile(full, content, 'utf8');
+      return `multiedit ${rel}: ${done} edits applied`;
+    },
+  },
   exec: {
     kimi: 'Bash',
     transport: 'wss',
@@ -143,7 +226,7 @@ export async function restHandler(req, res) {
   }
 
   if (req.method === 'POST' && url.pathname === '/tools/call') {
-    return handleCall(req, res);
+    return handleCall(req, res, url);
   }
 
   if (req.method === 'POST' && url.pathname === '/session') {
@@ -193,7 +276,7 @@ export async function invokeTool(name, args = {}, root = ROOT, sessionId = null)
   }
 }
 
-async function handleCall(req, res) {
+async function handleCall(req, res, url) {
   let data = '';
   for await (const c of req) data += c;
   let body;
@@ -202,7 +285,15 @@ async function handleCall(req, res) {
   } catch {
     return json(res, 400, { ok: false, error: 'invalid json body' });
   }
-  const out = await invokeTool(body.tool, body.args || {});
+  // Scope REST calls to the agent's session workspace when a token is supplied,
+  // so a file written over REST lands in the same box exec runs in (WSS parity).
+  // No token -> MIKI_ROOT, preserving the admin/debug behavior.
+  const auth = req.headers['authorization'] || '';
+  const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  const token = bearer || url.searchParams.get('token') || '';
+  const session = sessionForToken(token);
+  const root = session ? session.workspace : ROOT;
+  const out = await invokeTool(body.tool, body.args || {}, root, session ? session.id : null);
   const code = out.ok ? 200 : out.error.includes('unknown tool') ? 404 : 400;
   return json(res, code, out);
 }

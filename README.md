@@ -55,7 +55,10 @@ just the arms that make the surgeon's moves land correctly in the box.
 | miki tool     | kimi command | transport | status |
 |---------------|--------------|-----------|--------|
 | `read_file`   | `Read`       | REST      | done   |
-| `write_file`  | `Write`/`Edit` | REST    | done   |
+| `write_file`  | `Write`      | REST      | done   |
+| `edit`        | `Edit`       | REST      | done   |
+| `multiedit`   | `MultiEdit`  | REST      | done   |
+| `grep`        | `Grep`       | REST      | done   |
 | `list_files`  | `Glob`       | REST      | done   |
 | `exec`        | `Bash`       | WSS (stream) | done |
 | *(unified WSS session)* | all of the above over one socket | WSS | done |
@@ -76,6 +79,7 @@ REST (HTTPS)
   GET  /tools       -> list of tools (name, kimi mapping, transport)
   POST /tools/call  -> { "tool":"read_file", "args":{ "path":"sample.txt" } }
                      -> { "ok": true, "result": "<file contents>" }
+                     (with a session token -> scoped to that agent's workspace, like WSS)
   POST /session     -> Authorization: Bearer <MIKI_AUTH_SECRET>
                      -> { "ok":true, "token":"<hex>", "sessionId":"<uuid>",
                           "workspace":"<MIKI_ROOT>/.sessions/<uuid>" }
@@ -241,8 +245,9 @@ The `drop.mjs` helper ships in this repo and the concept lives at
 
 ## Milestones
 
-- [x] **M1 Tool surface** — `read_file` (Read), `write_file` (Write/Edit),
-      `list_files` (Glob), `exec` (Bash, streaming); all confined to `MIKI_ROOT`.
+- [x] **M1 Tool surface** — `read_file` (Read), `write_file` (Write),
+      `edit` (Edit), `multiedit` (MultiEdit), `list_files` (Glob), `grep` (Grep),
+      `exec` (Bash, streaming); all confined to `MIKI_ROOT`.
 - [x] **M2 Unified WSS session** — one WSS socket drives every tool, with
       streaming frames for `exec`; REST kept for one-shot calls.
 - [x] **M3 Agent sessions & auth** — each agent gets an isolated workspace +
