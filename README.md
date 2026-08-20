@@ -210,6 +210,20 @@ The GYM paradigm itself — the inverse of a test suite, built to grow the
 operator — is documented at
 [github.com/arrrrny/gym](https://github.com/arrrrny/gym).
 
+### DROP CARD — a mis-fire is not a mistake
+
+The gate is strict, but strict is not blind. If an agent hits an unexpected
+outcome at the gym — a rep or exercise that does not go as planned — it STOPS
+and drops a card:
+
+    I did X, expecting Y and Z happened, SO I DROPPED.
+
+The card lands in two redundant places by default: `drops/DROP-<agent>-<date>.md`
+and a GitHub issue. That unexpected outcome can be a bug, or it can be a
+discovery nobody saw coming — and it deserves the extra attention either way.
+The `drop.mjs` helper ships in this repo and the concept lives at
+[github.com/arrrrny/drop-card](https://github.com/arrrrny/drop-card).
+
 ## Files
 
 - `server.mjs`    — the miki tool server (HTTPS + WSS, `ws` for the socket).
@@ -219,6 +233,7 @@ operator — is documented at
 - `demo.mjs`      — spawns the server, runs the REST agent, exits.
 - `gym.mjs`       — the two-phase GYM runner (warmup reps + graded exercises + gate).
 - `gym/`          — warmup reps (`<id>-<name>.mjs`) and graded exercises (`exercise-*.mjs`).
+- `drop.mjs`      — DROP CARD helper: capture a mis-fire as a card (local drop + GitHub issue).
 - `dart_demo/stream.dart` — a `dart test`-style streaming script (no pub get).
 - `sample.txt`    — a file for the demo to read.
 - `certs/`        — local self-signed TLS cert (gitignored; `npm run certs`).

@@ -6,3 +6,6 @@ certs/
 
 # test scratch
 test/_tmp_*
+
+# drop cards (runtime)
+drops/

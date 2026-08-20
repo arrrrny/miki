@@ -133,6 +133,10 @@ const ctx = {
 };
 
 console.log(`\nPHASE 1 — WARMUP (${warmups.length} rep(s)). Complete all before you exercise.\n`);
+
+console.log('DROP CARD — at any point, if there is a mis-fire, STOP and drop a card:');
+console.log('  node drop.mjs --agent <you> --did "..." --expected "..." --happened "..." --where "miki GYM"');
+console.log('A mis-fire is not a mistake. It is a discovery. Drop it.\n');
 let grown = 0;
 for (const ex of warmups) {
   process.stdout.write(`[${ex.id}] ${ex.name}  (muscle: ${ex.muscle})\n    ${ex.brief}\n`);
@@ -143,6 +147,7 @@ for (const ex of warmups) {
       grown++;
     } else {
       console.log(`    WEAK — ${r?.note || 'false'}\n`);
+      console.log(`    MIS-FIRE. Not a mistake — a signal. Drop a card:\n    node drop.mjs --agent <you> --where "miki GYM ${ex.id} ${ex.name}" --did "..." --expected "..." --happened "${r?.note || ''}"\n`);
     }
   } catch (e) {
     console.log(`    WEAK — ${e.message}\n`);
@@ -179,6 +184,7 @@ for (const ex of exercises) {
       passed++;
     } else {
       console.log(`    FAILED — ${r?.notes || 'evaluate returned false'}\n`);
+      console.log(`    MIS-FIRE. Not a mistake — a signal. Drop a card:\n    node drop.mjs --agent <you> --where "miki GYM ${ex.id} ${ex.name}" --did "..." --expected "..." --happened "${r?.notes || ''}"\n`);
     }
   } catch (e) {
     console.log(`    FAILED — ${e.message}\n`);
