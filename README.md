@@ -286,6 +286,9 @@ MIKI_DROP_CARD=1 node gym.mjs     # every mis-fire auto-fires a DROP CARD
 - `gym.mjs`       — the two-phase GYM runner (warmup reps + graded exercises + gate).
 - `gym/`          — warmup reps (`<id>-<name>.mjs`) and graded exercises (`exercise-*.mjs`).
 - `drop.mjs`      — DROP CARD helper: capture a mis-fire as a card (local drop + GitHub issue).
+- `MIKI_GUIDE.md` — operator guide for the forklift orchestrator: how miki maps
+                     onto the forklift box, plus a copy-paste "how to use miki"
+                     block to embed in cloud-agent task specs.
 - `skills/`       — skill playbooks (`<name>/SKILL.md`); the `skills` arm lists and loads them.
 - `dart_demo/stream.dart` — a `dart test`-style streaming script (no pub get).
 - `sample.txt`    — a file for the demo to read.
