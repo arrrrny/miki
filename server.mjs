@@ -32,10 +32,22 @@ export const AUTH_SECRET = process.env.MIKI_AUTH_SECRET || 'dev-secret-change-me
 const sessions = new Map(); // token -> { id, workspace }
 let mcpHandler = null; // assigned by attachMcp when the MCP surface is mounted
 
-export async function issueToken() {
+// `workspaceArg` lets the delegator anchor a session directly onto an existing
+// repo in the box (e.g. /workspace/zorphy) instead of a fresh .sessions scratch
+// dir — so the surgeon arms operate on real project files on a real branch.
+// Must live inside MIKI_ROOT; pass the repo root (== ROOT) to work in-place.
+export async function issueToken(workspaceArg) {
   const id = crypto.randomUUID();
   const token = crypto.randomBytes(24).toString('hex');
-  const workspace = path.join(ROOT, '.sessions', id);
+  let workspace;
+  if (typeof workspaceArg === 'string' && workspaceArg.length) {
+    workspace = path.resolve(workspaceArg);
+    if (workspace !== ROOT && !workspace.startsWith(ROOT + path.sep)) {
+      throw new Error('workspace must be inside MIKI_ROOT');
+    }
+  } else {
+    workspace = path.join(ROOT, '.sessions', id);
+  }
   await fs.mkdir(workspace, { recursive: true });
   sessions.set(token, { id, workspace, cleared: false });
   return { token, id, workspace };
@@ -278,8 +290,20 @@ export async function restHandler(req, res) {
     if (auth !== 'Bearer ' + AUTH_SECRET) {
       return json(res, 401, { ok: false, error: 'unauthorized — expected Bearer <MIKI_AUTH_SECRET>' });
     }
-    const { token, id, workspace } = await issueToken();
-    return json(res, 200, { ok: true, token, sessionId: id, workspace });
+    let workspace;
+    if (req.headers['content-type'] && req.headers['content-type'].includes('application/json')) {
+      let data = '';
+      for await (const c of req) data += c;
+      try {
+        const b = JSON.parse(data || '{}');
+        workspace = b.workspace;
+      } catch {
+        // empty/invalid body -> default scratch workspace
+      }
+    }
+    const { token, id, workspace: ws } = await issueToken(workspace);
+    recordEntry({ sessionId: id, kimi: 'Session', tool: 'session', args: { workspace: ws }, transport: 'rest', ok: true });
+    return json(res, 200, { ok: true, token, sessionId: id, workspace: ws });
   }
 
   if (req.method === 'GET' && url.pathname === '/transcript') {
