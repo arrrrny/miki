@@ -346,7 +346,7 @@ function sshCall(msg, { capture = false } = {}) {
     c.on('data', (d) => {
       buf = Buffer.concat([buf, d]);
       buf = drainFrames(buf, (f) => {
-        if (f.type === 'stdout') { const s = Buffer.from(f.data, 'base64'); if (capture) captured += f.data; else process.stdout.write(s); }
+        if (f.type === 'stdout') { const s = Buffer.from(f.data, 'base64'); if (capture) captured += s.toString('utf8'); else process.stdout.write(s); }
         else if (f.type === 'stderr') process.stderr.write(Buffer.from(f.data, 'base64'));
         else if (f.type === 'data') process.stdout.write(Buffer.from(f.data, 'base64'));
         else if (f.type === 'items') { for (const it of f.items) console.log((it.isDir ? 'd' : '-') + ' ' + String(it.size || 0).padStart(12) + ' ' + new Date((it.mtime || 0) * 1000).toISOString().slice(0, 19) + ' ' + it.name); }
@@ -374,7 +374,7 @@ async function fetchIssue(owner, repo, number) {
 // We also source the cargo env and put the standard toolchain dirs on PATH so
 // a cloud agent can `cargo`/`dart`/`flutter` straight away — r.sh/r2.sh share
 // the same minimal bootstrap and would otherwise lose cargo/dart on PATH.
-function boxExec(cfg, command, { cwd, timeout } = {}) {
+function boxExec(cfg, command, { cwd, timeout, capture = false } = {}) {
   const wrapped =
     `export DAYTONA_SESSION='${sessionId()}'; ` +
     `source ~/.bash_env 2>/dev/null; ` +
@@ -386,22 +386,23 @@ function boxExec(cfg, command, { cwd, timeout } = {}) {
   // the command locally. This avoids the non-interactive exec daemon problem
   // and keeps the same wrapped bootstrap as the remote path.
   if (cfg.ssh && isLocalBox(cfg.ssh.host)) {
-    return execLocal(wrapped, { cwd, timeout });
+    return execLocal(wrapped, { cwd, timeout, capture });
   }
-  if (cfg.ssh) return ensureDaemon().then(() => sshCall({ type: 'exec', command: wrapped, cwd, timeout }));
+  if (cfg.ssh) return ensureDaemon().then(() => sshCall({ type: 'exec', command: wrapped, cwd, timeout }, { capture }));
   return execWss(cfg, { command: wrapped, cwd, timeout });
 }
 
-function execLocal(command, { cwd, timeout } = {}) {
+function execLocal(command, { cwd, timeout, capture = false } = {}) {
   return new Promise((resolve) => {
     const opts = cwd ? { cwd } : {};
     const child = spawn('bash', ['-lc', command], opts);
+    let captured = '';
     let timer;
     if (timeout) timer = setTimeout(() => { console.error(`\nkimi: local timeout ${timeout}s`); child.kill('SIGKILL'); }, timeout * 1000);
-    child.stdout.on('data', (d) => process.stdout.write(d));
-    child.stderr.on('data', (d) => process.stderr.write(d));
-    child.on('exit', (code) => { if (timer) clearTimeout(timer); resolve(code ?? 0); });
-    child.on('error', (e) => { console.error('kimi: local exec error:', e.message); if (timer) clearTimeout(timer); resolve(2); });
+    child.stdout.on('data', (d) => { if (capture) captured += d; else process.stdout.write(d); });
+    child.stderr.on('data', (d) => { if (capture) captured += d; else process.stderr.write(d); });
+    child.on('exit', (code) => { if (timer) clearTimeout(timer); resolve(capture ? { code: code ?? 0, out: captured } : (code ?? 0)); });
+    child.on('error', (e) => { console.error('kimi: local exec error:', e.message); if (timer) clearTimeout(timer); resolve(capture ? { code: 2, out: '' } : 2); });
   });
 }
 
@@ -625,6 +626,10 @@ function usage() {
   kimi check                                   connectivity check
   kimi exec <cmd...> [-d <dir>] [-t <secs>]     one-shot streaming exec (r2.sh parity)
   kimi speckit <phase|args...> [-d <dir>] [-t <secs>]  run SDD on the box: phases specify|plan|tasks|implement (skills) or any specify subcommand
+    kimi speckit specify "<desc>"             write spec + auto-spawn its worktree (worktrees.create hook)
+    kimi speckit worktrees.create <branch>    spawn an isolated git worktree for a feature branch
+    kimi speckit worktrees.list               dashboard of active worktrees
+    kimi speckit worktrees.clean             prune/remove merged or stale worktrees
   kimi goal "<objective>" [-d <dir>]                write a durable GOAL.md contract on the box (kimi /goal mirror); kimi goal prints it
   kimi issue <owner/repo#number|url>            fetch GitHub issue JSON (uses GITHUB_TOKEN if set)`);
 }
@@ -705,7 +710,7 @@ async function main() {
     }
     case 'speckit': {
       // Spec-driven development through kimi's teleporter. The agent never
-      // holds the repo; SDD runs ON THE BOX. Two modes:
+      // holds the repo; SDD runs ON THE BOX. Three modes:
       //   • SDD cycle phases (skills): `kimi speckit specify|plan|tasks|implement`
       //     each phase's real work is a bash script in
       //     <project>/.specify/scripts/bash/ — kimi runs it in the persisted cwd.
@@ -714,6 +719,15 @@ async function main() {
       //       tasks   -> setup-tasks.sh         (writes tasks.md)
       //       implement -> no single script; surface the implement skill so the
       //                    agent can follow it and write the code on the box.
+      //   • worktree skills (spec-kit-worktree-parallel extension): isolate each
+      //     feature in its own git worktree so multiple agents run in parallel
+      //     without clobbering the primary tree. `kimi speckit specify` mirrors
+      //     the extension's `after_specify -> speckit.worktrees.create` hook: it
+      //     auto-spawns a worktree for the new feature branch right after writing
+      //     the spec (the raw bash passthrough would otherwise skip the hook).
+      //       worktrees.create <branch> [--in-place] [--base-ref X]
+      //       worktrees.list
+      //       worktrees.clean
       //   • raw passthrough: anything else (`kimi speckit init|check|workflow …`)
       //     runs `specify <args>` on the box.
       // Honors the persisted `kimi s cd <dir>` cwd so
@@ -729,16 +743,47 @@ async function main() {
       const state = loadState();
       const phase = cmdArgs[0];
       const sdd = { specify: 'create-new-feature.sh', plan: 'setup-plan.sh', tasks: 'setup-tasks.sh' };
+      const WT_SCRIPT = '.specify/extensions/worktrees/scripts/bash/create-worktree.sh';
+      // Resolve the git repo root so the relative .specify/... script paths
+      // resolve even when the agent hasn't cd'd into the repo yet (fresh box,
+      // no persisted cwd) — that's what produced "Script not present" before.
+      // Falls back to the box's primary repo when no cwd is known yet.
+      const repoCwd = cwd || state.cwd || '/workspace/kimi-code-sync';
+      const repoCd = `cd "$(G=$(git -C "${repoCwd}" rev-parse --show-toplevel 2>/dev/null); if [ -n "$G" ]; then echo "$G"; else git -C /workspace/kimi-code-sync rev-parse --show-toplevel 2>/dev/null || echo "${repoCwd}"; fi)"`;
+
+      // --- worktree skills (spec-kit-worktree-parallel) ---
+      if (phase === 'worktrees.create') {
+        const wtArgs = cmdArgs.slice(1).map((a) => JSON.stringify(a)).join(' ');
+        return boxExec(cfg, `${repoCd} && bash ${WT_SCRIPT} --json ${wtArgs}`.trim(), { cwd: repoCwd, timeout: timeout || 120 });
+      }
+      if (phase === 'worktrees.list') {
+        return boxExec(cfg, `${repoCd} && git worktree list`, { cwd: repoCwd, timeout: timeout || 60 });
+      }
+      if (phase === 'worktrees.clean') {
+        return boxExec(cfg, `${repoCd} && git worktree prune && git worktree list`, { cwd: repoCwd, timeout: timeout || 120 });
+      }
+
       if (phase && sdd[phase]) {
-        // Run the phase's skill script on the box. Remaining args (e.g. the
-        // feature description for `specify`) pass through to the script.
         const scriptArgs = cmdArgs.slice(1).map((a) => JSON.stringify(a)).join(' ');
-        return boxExec(cfg, `bash .specify/scripts/bash/${sdd[phase]} ${scriptArgs}`.trim(), { cwd: cwd || state.cwd, timeout: timeout || 600 });
+        const run = `${repoCd} && bash .specify/scripts/bash/${sdd[phase]} ${scriptArgs}`.trim();
+        // After `specify`, mirror the extension's after_specify hook: spawn a
+        // worktree for the feature branch the spec just created (the newest
+        // entry under specs/), so all follow-up SDD work happens in isolation.
+        // The spec folder itself is generated by specify — never hand-created.
+        if (phase === 'specify') {
+          const rc1 = await boxExec(cfg, run, { cwd: repoCwd, timeout: timeout || 600 });
+          if (rc1 !== 0) return rc1;
+          const { code, out } = await boxExec(cfg, `${repoCd} && ls -1 specs 2>/dev/null | sort | tail -1`, { cwd: repoCwd, timeout: 60, capture: true });
+          const branch = (out || '').toString().trim().split('\n').pop();
+          if (!branch) return 0;
+          return boxExec(cfg, `${repoCd} && bash ${WT_SCRIPT} --json ${JSON.stringify(branch)}`.trim(), { cwd: repoCwd, timeout: 120 });
+        }
+        return boxExec(cfg, run, { cwd: repoCwd, timeout: timeout || 600 });
       }
       if (phase === 'implement') {
-        return boxExec(cfg, `cat .kimi-code/skills/speckit-implement/SKILL.md 2>/dev/null || cat .specify/skills/speckit-implement/SKILL.md 2>/dev/null || echo "follow the speckit-implement skill"`, { cwd: cwd || state.cwd, timeout: timeout || 120 });
+        return boxExec(cfg, `${repoCd} && cat .kimi-code/skills/speckit-implement/SKILL.md 2>/dev/null || cat .specify/skills/speckit-implement/SKILL.md 2>/dev/null || echo "follow the speckit-implement skill"`, { cwd: repoCwd, timeout: timeout || 120 });
       }
-      return boxExec(cfg, 'specify ' + cmdArgs.join(' '), { cwd: cwd || state.cwd, timeout: timeout || 600 });
+      return boxExec(cfg, `${repoCd} && specify ${cmdArgs.join(' ')}`.trim(), { cwd: repoCwd, timeout: timeout || 600 });
     }
     case 'goal': {
       // `kimi goal "<objective>"` writes a durable goal artifact (GOAL.md) onto
