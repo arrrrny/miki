@@ -1,11 +1,16 @@
 {
   "name": "miki",
   "version": "0.0.1",
-  "private": true,
   "type": "module",
   "description": "Inverse Kimi — a provider-free coding tool server for cloud agents.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arrrrny/miki"
+  },
   "bin": {
-    "miki": "./server.mjs"
+    "miki": "./server.mjs",
+    "kimi": "./kimi.mjs"
   },
   "scripts": {
     "start": "node server.mjs",
@@ -14,9 +19,11 @@
     "demo": "node demo.mjs",
     "demo:ws": "node agent-ws.mjs",
     "demo:mcp": "node mcp-client.mjs",
+    "kimi": "node kimi.mjs",
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
+    "ssh2": "^1.17.0",
     "ws": "^8.21.3"
   }
 }

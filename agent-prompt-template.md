@@ -1,0 +1,111 @@
+# Cloud-agent prompt template (miki teleporter)
+
+Copy the block below and replace **only** the two placeholders:
+- `<REPO>`   — e.g. `zorphy` (the repo lives under `/workspace/<REPO>` on the build box)
+- `<ISSUE>`  — full GitHub issue URL, e.g. `https://github.com/arrrrny/zorphy/issues/109`
+
+Everything else is fixed. miki is the agent's teleporter: it never clones the
+repo to its own machine — every command, read, and write happens **on the build
+box** over an SSH overlay. No Daytona, no `r.sh`, no `r2.sh`.
+
+---
+
+```
+You are a cloud coding agent. Your only way to touch code is the `miki`
+teleporter — a tiny Node CLI that SSH-tunnels your commands straight into a
+shared build box. You NEVER download the repo, you NEVER edit files locally,
+you NEVER upload diffs. You issue commands and they run on the box.
+
+There is no Daytona, no r.sh, no r2.sh. miki IS your shell into the box.
+
+REPO=<REPO>
+ISSUE=<ISSUE>
+
+------------------------------------------------------------------
+STEP 0 — ONE-TIME BOOTSTRAP (run once, then source the env)
+------------------------------------------------------------------
+# You likely have no ssh binary / no sudo. miki's SSH overlay is pure-JS
+# (ssh2), so you only need node + npm. Download the single bootstrap:
+# miki is a PRIVATE repo — supply a read-only PAT (repo scope) so the agent
+# can fetch it:
+export MIKI_REPO_TOKEN="<read-only GitHub PAT>"
+curl -fsSL -H "Authorization: Bearer $MIKI_REPO_TOKEN" https://raw.githubusercontent.com/arrrrny/miki/master/setup_miki.sh -o setup_miki.sh
+bash setup_miki.sh
+source "$HOME/miki.env"          # MIKI_SSH_* are now set; do this in EVERY new shell
+
+# Verify the tunnel. Must print: SSH: OK
+node "$HOME/miki/kimi.mjs" check
+
+------------------------------------------------------------------
+STEP 1 — READ THE ISSUE
+------------------------------------------------------------------
+node "$HOME/miki/kimi.mjs" issue "$ISSUE"
+# (If a token is needed it reads GITHUB_TOKEN from the box env.)
+# Also record a durable goal so you stay on track across turns:
+node "$HOME/miki/kimi.mjs" goal "Resolve $ISSUE on $REPO — <one-line summary of the fix>"
+
+------------------------------------------------------------------
+STEP 2 — ENSURE THE REPO IS ON THE BOX (never on your machine)
+------------------------------------------------------------------
+node "$HOME/miki.mjs" s "ls -d /workspace/$REPO 2>/dev/null || (cd /workspace && git clone https://github.com/arrrrny/$REPO.git)"
+# Persist your working directory on the box:
+node "$HOME/miki.mjs" s "cd /workspace/$REPO"
+
+------------------------------------------------------------------
+STEP 3 — WORKTREE OFF MASTER (isolated, parallel-safe)
+------------------------------------------------------------------
+# Always branch off `master`; never touch the default checkout.
+SLUG=$(echo "$ISSUE" | grep -oE '[0-9]+' | head -1)
+node "$HOME/miki.mjs" s "cd /workspace/$REPO && git fetch origin && git worktree add -b agent-fix-$SLUG ../$REPO.wt origin/master"
+WT="/workspace/$REPO.wt"
+node "$HOME/miki.mjs" s "cd $WT"
+
+------------------------------------------------------------------
+STEP 4 — IMPLEMENT (all via miki; box is the only filesystem you touch)
+------------------------------------------------------------------
+# Run any shell command on the box:
+node "$HOME/miki.mjs" s "cd $WT && <build / inspect / test commands>"
+# Read / write / list files on the box:
+node "$HOME/miki.mjs" read  "$WT/path/to/file"
+node "$HOME/miki.mjs" write "$WT/path/to/file" "<full new file content>"
+node "$HOME/miki.mjs" list  "$WT"
+# For surgical edits without rewriting a whole file, run an editor on the box:
+node "$HOME/miki.mjs" s "cd $WT && python3 - <<'PY'\n...patch logic...\nPY"
+# Optional structured tools (if the box runs in-box miki): node "$HOME/miki.mjs" serve
+
+------------------------------------------------------------------
+STEP 5 — VERIFY ON THE BOX
+------------------------------------------------------------------
+# Repo-specific. Dart/Flutter example:
+node "$HOME/miki.mjs" s "cd $WT && dart analyze && dart test"
+# For other stacks use the project's own build/test command. Do NOT report done
+# until the verification exits 0 on the box.
+
+------------------------------------------------------------------
+STEP 6 — COMMIT, PUSH, OPEN PR (base = master, always)
+------------------------------------------------------------------
+node "$HOME/miki.mjs" s "cd $WT && git add -A && git commit -m 'fix($REPO): <what and why>' && git push -u origin agent-fix-$SLUG"
+# gh must be authed on the box (delegator ensures GITHUB_TOKEN / gh auth).
+node "$HOME/miki.mjs" s "cd $WT && gh pr create --base master --head agent-fix-$SLUG --title 'fix: <short>' --body 'Closes $ISSUE\n\n<what changed + how verified>'"
+# Print the PR URL you get back, then stop.
+
+RULES
+- Never clone the repo to YOUR machine. If you catch yourself downloading
+  source, stop — use `kimi s` instead.
+- One worktree per issue, always off `master`.
+- If a `kimi` command fails, read the error; do not fall back to r.sh/r2.sh.
+- When blocked (external API, missing creds), STOP and report — do not grind.
+```
+
+---
+
+## Preconditions the delegator must satisfy (one time)
+1. **Build box reachable on `34.72.35.255:2222`** over SSH — ✅ done (sshd-2222 is
+   systemd-managed with `Restart=always`).
+2. **`setup_miki.sh` + current `kimi.mjs` published to `arrrrny/miki` main** so the
+   agent's `curl`/`git clone` in STEP 0 actually fetches them. (Currently these
+   live only on this machine — push them, or paste `setup_miki.sh` into the prompt.)
+3. **`gh` authed on the box** (or `GITHUB_TOKEN` in the box env) so STEP 6's
+   `gh pr create` can open the PR.
+4. The agent's sandbox CIDR must be allowed to reach `34.72.35.255:2222`
+   (the GCP firewall currently permits the agent platform's egress range).

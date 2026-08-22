@@ -125,7 +125,13 @@ export const tools = {
       const base = rel ? path.resolve(root, rel) : root;
       if (base !== root && !base.startsWith(root + path.sep)) throw new Error('path escapes sandbox root');
       const re = new RegExp(pattern);
-      const skip = new Set(['node_modules', 'certs', '.sessions']);
+      // Skip heavyweight build/binary dirs: a grep over a real repo (e.g. a Rust
+      // `target/`) otherwise enumerates + reads megabytes of artifacts into memory
+      // and OOMs the server — taking it down for every other agent. One call must
+      // never kill the shared server.
+      const skip = new Set(['node_modules', 'certs', '.sessions', 'target', 'dist', 'build', 'out', 'vendor', '.git']);
+      const MAX_FILE = 1 * 1024 * 1024; // 1 MB — beyond this it's almost certainly binary/artifact
+      const MAX_MATCHES = 5000;
       let files = globSync('**/*', { cwd: base, nodir: true }).filter(
         (p) => !p.split('/').some((seg) => skip.has(seg)),
       );
@@ -135,16 +141,24 @@ export const tools = {
       }
       const out = [];
       for (const f of files) {
+        if (out.length >= MAX_MATCHES) break;
         const full = path.join(base, f);
+        let stat;
+        try { stat = await fs.stat(full); } catch { continue; }
+        if (stat.size > MAX_FILE) continue;
         let content;
         try {
           content = await fs.readFile(full, 'utf8');
         } catch {
           continue;
         }
-        content.split('\n').forEach((line, i) => {
-          if (re.test(line)) out.push(`${f}:${i + 1}:${line}`);
-        });
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (re.test(lines[i])) {
+            out.push(`${f}:${i + 1}:${lines[i]}`);
+            if (out.length >= MAX_MATCHES) break;
+          }
+        }
       }
       return out.length ? out.join('\n') : 'no matches';
     },
@@ -301,7 +315,14 @@ export async function restHandler(req, res) {
         // empty/invalid body -> default scratch workspace
       }
     }
-    const { token, id, workspace: ws } = await issueToken(workspace);
+    let token, id, ws;
+    try {
+      ({ token, id, workspace: ws } = await issueToken(workspace));
+    } catch (e) {
+      // A bad anchored workspace (outside MIKI_ROOT) must reject cleanly — not
+      // throw and take the whole server down with an unhandled rejection.
+      return json(res, 400, { ok: false, error: String(e && e.message ? e.message : e) });
+    }
     recordEntry({ sessionId: id, kimi: 'Session', tool: 'session', args: { workspace: ws }, transport: 'rest', ok: true });
     return json(res, 200, { ok: true, token, sessionId: id, workspace: ws });
   }
