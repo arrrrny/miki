@@ -24,12 +24,14 @@ ISSUE=<ISSUE>
 ------------------------------------------------------------------
 STEP 0 — ONE-TIME BOOTSTRAP (run once, then source the env)
 ------------------------------------------------------------------
-# You likely have no ssh binary / no sudo. miki's SSH overlay is pure-JS
-# (ssh2), so you only need node + npm. Download the single bootstrap:
-# miki is a PRIVATE repo — supply a read-only PAT (repo scope) so the agent
-# can fetch it:
-export MIKI_REPO_TOKEN="<read-only GitHub PAT>"
-curl -fsSL -H "Authorization: Bearer $MIKI_REPO_TOKEN" https://raw.githubusercontent.com/arrrrny/miki/master/setup_miki.sh -o setup_miki.sh
+# The SSH connection details are given to you by the delegator — they are NOT
+# in the repo. Set them first, then fetch and run the single bootstrap:
+export MIKI_SSH_HOST="34.173.163.177"   # box IP — updates on box restart
+export MIKI_SSH_PORT="2222"
+export MIKI_SSH_USER="agent"
+export MIKI_SSH_KEY_B64="<agent private key, single-line base64 from delegator>"
+# miki is a PUBLIC repo, so just fetch it (no token needed):
+curl -fsSL https://raw.githubusercontent.com/arrrrny/miki/master/setup_miki.sh -o setup_miki.sh
 bash setup_miki.sh
 source "$HOME/miki.env"          # MIKI_SSH_* are now set; do this in EVERY new shell
 
@@ -100,12 +102,14 @@ RULES
 ---
 
 ## Preconditions the delegator must satisfy (one time)
-1. **Build box reachable on `34.72.35.255:2222`** over SSH — ✅ done (sshd-2222 is
-   systemd-managed with `Restart=always`).
-2. **`setup_miki.sh` + current `kimi.mjs` published to `arrrrny/miki` main** so the
-   agent's `curl`/`git clone` in STEP 0 actually fetches them. (Currently these
-   live only on this machine — push them, or paste `setup_miki.sh` into the prompt.)
+1. **Build box reachable on `34.173.163.177:2222`** over SSH — ✅ done (sshd-2222 is
+   systemd-managed with `Restart=always`). Note: the GCP external IP is
+   ephemeral and changes on restart — update `MIKI_SSH_HOST` in the prompt when it does.
+2. **`setup_miki.sh` + current `kimi.mjs` published to `arrrrny/miki` (public, default
+   branch `master`)** so the agent's `curl`/`git clone` in STEP 0 fetches them.
+   The SSH key is intentionally NOT in the repo — the delegator pastes it into the
+   prompt as `MIKI_SSH_KEY_B64`.
 3. **`gh` authed on the box** (or `GITHUB_TOKEN` in the box env) so STEP 6's
    `gh pr create` can open the PR.
-4. The agent's sandbox CIDR must be allowed to reach `34.72.35.255:2222`
+4. The agent's sandbox CIDR must be allowed to reach `34.173.163.177:2222`
    (the GCP firewall currently permits the agent platform's egress range).
