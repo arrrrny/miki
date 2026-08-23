@@ -27,7 +27,7 @@
 set -euo pipefail
 
 # ---- build-box connection (supplied by the delegator via env) ----
-export MIKI_SSH_HOST="${MIKI_SSH_HOST:-34.173.163.177}"
+export MIKI_SSH_HOST="${MIKI_SSH_HOST:-34.57.212.124}"
 export MIKI_SSH_PORT="${MIKI_SSH_PORT:-2222}"
 export MIKI_SSH_USER="${MIKI_SSH_USER:-agent}"
 
