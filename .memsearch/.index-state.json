@@ -1,0 +1,17 @@
+{
+  "collection": "memsearch_chunks",
+  "failed_files": [],
+  "last_completed_at": "2026-09-08T06:17:23.657578Z",
+  "last_error": "MilvusException: <MilvusException: (code=65535, message=fail to Query on QueryNode 733: worker(733) query failed:  => query results exceed the limit size  at /workspace/source/internal/core/src/segcore/SegmentInterface.cpp:145\n)>",
+  "last_failed_at": "2026-09-08T06:17:23.657578Z",
+  "last_started_at": "2026-09-08T06:17:14.007345Z",
+  "last_success_at": "2026-09-06T02:43:24.051085Z",
+  "milvus_uri": "http://localhost:19530",
+  "operation": "index",
+  "paths": [
+    "/Users/ahmettok/.kimi-code/../Developer/miki/.memsearch/memory"
+  ],
+  "schema_version": 1,
+  "status": "error",
+  "updated_at": "2026-09-08T06:17:23.657578Z"
+}

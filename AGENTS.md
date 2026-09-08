@@ -338,3 +338,13 @@ and, for transport behavior, in `wss.test.mjs` / `mcp.test.mjs` as appropriate.
   killed on timeout, but it is still arbitrary command execution behind the token.
 - Per the operator guide (`MIKI_GUIDE.md`): never download a GitHub PAT into the box;
   ship work through the normal box/PR flow.
+
+## 🔍 Code Search — MANDATORY FIRST STEP
+
+**STOP. Before using `grep`, `find`, `rg`, `ripgrep`, or ANY shell-based search, you MUST use semantic search first.**
+
+```
+mcp__claude_context__search_code(query="what you're looking for", path="/absolute/path/to/repo")
+```
+
+**Why?** Semantic search understands code relationships, finds implementations by meaning (not just text), and catches things grep misses entirely.
